@@ -1,0 +1,15 @@
+torch>=2.1
+torch-geometric>=2.5
+pyg-lib>=0.4
+torch-scatter>=2.1
+torch-sparse>=0.6
+torch-cluster>=1.6
+torch-spline-conv>=1.2
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+tqdm>=4.66
+networkx>=3.1
+matplotlib>=3.7
+xxhash>=3.4
