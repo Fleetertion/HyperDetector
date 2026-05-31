@@ -1,0 +1,69 @@
+name: HyperDetector
+seed: 0
+split:
+  val_split: 0.2
+  random_state: 0
+train:
+  epoch: 10
+  batch_size: 4
+  lr: 0.0003
+  weight_decay: 5.0e-05
+  mask_rate: 0.5
+  grad_clip: 1.0
+  early_stop_patience: 3
+  min_delta: 0.0001
+  warmup_epochs: 0
+  best_epoch: 9
+  best_val_loss: 0.018894887377973645
+model:
+  hid_dim: 64
+  num_layers: 2
+  hyper_k: 4
+  use_bsa: true
+  bsa_heads: 8
+  bsa_block_size: 512
+  use_temporal: true
+  use_norm: true
+  dropout: 0.2
+  input_dim: 10
+eval:
+  kdt_k: 12
+  sweep_kdt_k:
+  - 5
+  - 8
+  - 10
+  - 12
+  - 15
+  - 20
+  default_target_fpr: 0.05
+  sweep_target_fpr:
+  - 0.01
+  - 0.02
+  - 0.03
+  - 0.05
+  - 0.08
+  - 0.1
+  - 0.12
+  - 0.15
+  - 0.2
+  recall_drop_budget: 0.01
+  last_best:
+    selection: max_precision_with_recall_floor
+    anchor_recall: 0.9761904761904762
+    recall_floor: 0.9661904761904762
+    recall_drop_budget: 0.01
+    kdt_k: 12
+    target_fpr: 0.05
+    thr: 0.12644340944726246
+    P: 0.8723404255319149
+    R: 0.9761904761904762
+    F1: 0.9213483146067415
+    AUC: 0.9101068999028183
+    AP: 0.7838192530972756
+    updated_at: '2026-05-28T11:12:01'
+artifacts:
+  model_path: /media/fleet/Experiment/HyperDetector/result/checkpoint-apt2021.pt
+  memory_bank_path: /media/fleet/Experiment/HyperDetector/result/apt2021_memory_bank.pkl
+  updated_at: '2026-05-31T09:57:09'
+  bank_size: 199
+  embedding_dim: 128
