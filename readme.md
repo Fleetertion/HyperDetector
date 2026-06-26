@@ -120,9 +120,11 @@ python test.py --dataset dataset
 If you use this repository in your research, please cite the corresponding paper/project:
 
 ```bibtex
-@misc{hyperdetector,
-  title={Advanced Persistent Threat Detection via Hypergraph Neural Networks with Enhanced Global Perception},
-  author={},
+@inproceedings{wu2026hyperdetector,
+  title={HyperDetector: Advanced Persistent Threat Detection via Hypergraph Neural Networks with Enhanced Global Perception},
+  author={Wu, Ziyue and Wang, Nan and Liu, Jiqiang and Dong, Hairong and Zhao, Xibin},
+  booktitle={Proceedings of the ACM Web Conference 2026},
+  pages={2673--2682},
   year={2026}
 }
 ```
