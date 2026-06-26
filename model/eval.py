@@ -237,7 +237,10 @@ def evaluate_entity_level_using_knn(
         metric='euclidean',
         threshold_mode='legacy',
         target_recall=None,
-        use_cache=False):
+        use_cache=False,
+        auxiliary_score=None,
+        auxiliary_weight=1.0,
+        auxiliary_name=None):
     print("[eval-knn] standardizing features")
     x_train_mean = x_train.mean(axis=0)
     x_train_std = x_train.std(axis=0)
@@ -289,6 +292,23 @@ def evaluate_entity_level_using_knn(
             mean_distance, distances = _compute_and_cache_distances()
     score = distances / (mean_distance + 1e-12)
     del distances
+    if auxiliary_score is not None:
+        auxiliary_score = np.asarray(auxiliary_score, dtype=np.float64)
+        if auxiliary_score.shape[0] != score.shape[0]:
+            raise ValueError(
+                "auxiliary_score length mismatch: expected {}, got {}".format(
+                    score.shape[0], auxiliary_score.shape[0]
+                )
+            )
+        score_span = float(np.nanmax(score) - np.nanmin(score))
+        score = score + auxiliary_score * (score_span + 1.0) * float(auxiliary_weight)
+        print(
+            "[eval-knn] applying auxiliary score{}: weight={} positives={}".format(
+                "" if auxiliary_name is None else " ({})".format(auxiliary_name),
+                auxiliary_weight,
+                int(np.sum(auxiliary_score > 0)),
+            )
+        )
     unique_classes = np.unique(y_test)
     if unique_classes.shape[0] < 2:
         only_class = int(unique_classes[0]) if unique_classes.shape[0] == 1 else -1

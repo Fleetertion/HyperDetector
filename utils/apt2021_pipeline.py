@@ -115,6 +115,76 @@ def save_config(cfg: Dict) -> None:
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 
 
+def _parse_csv_ints(value: Optional[str]) -> List[int]:
+    if value is None:
+        return []
+    return [int(token.strip()) for token in str(value).split(",") if token.strip()]
+
+
+def _parse_csv_floats(value: Optional[str]) -> List[float]:
+    if value is None:
+        return []
+    return [float(token.strip()) for token in str(value).split(",") if token.strip()]
+
+
+def _set_if_provided(section: Dict, key: str, value) -> bool:
+    if value is None:
+        return False
+    section[key] = value
+    return True
+
+
+def apply_apt2021_cli_overrides(args, update_train: bool = True, update_eval: bool = True) -> Dict:
+    """Persist APT2021-specific CLI overrides into the pipeline config."""
+    cfg = load_config()
+    changed = False
+
+    if update_train:
+        train_cfg = cfg.setdefault("train", {})
+        changed |= _set_if_provided(train_cfg, "lr", getattr(args, "apt_lr", None))
+        changed |= _set_if_provided(train_cfg, "weight_decay", getattr(args, "apt_weight_decay", None))
+        changed |= _set_if_provided(train_cfg, "mask_rate", getattr(args, "apt_mask_rate", None))
+        changed |= _set_if_provided(train_cfg, "early_stop_patience", getattr(args, "apt_patience", None))
+        changed |= _set_if_provided(train_cfg, "min_delta", getattr(args, "apt_min_delta", None))
+        changed |= _set_if_provided(train_cfg, "warmup_epochs", getattr(args, "apt_warmup_epochs", None))
+        if getattr(args, "max_epoch", None) is not None:
+            changed |= _set_if_provided(train_cfg, "epoch", int(args.max_epoch))
+
+    model_cfg = cfg.setdefault("model", {})
+    changed |= _set_if_provided(model_cfg, "hid_dim", getattr(args, "apt_hid_dim", None))
+    changed |= _set_if_provided(model_cfg, "num_layers", getattr(args, "apt_num_layers", None))
+    changed |= _set_if_provided(model_cfg, "hyper_k", getattr(args, "apt_hyper_k", None))
+    changed |= _set_if_provided(model_cfg, "dropout", getattr(args, "apt_dropout", None))
+    changed |= _set_if_provided(model_cfg, "bsa_heads", getattr(args, "apt_bsa_heads", None))
+    changed |= _set_if_provided(model_cfg, "bsa_block_size", getattr(args, "apt_bsa_block_size", None))
+    changed |= _set_if_provided(model_cfg, "use_bsa", getattr(args, "apt_use_bsa", None))
+    changed |= _set_if_provided(model_cfg, "use_temporal", getattr(args, "apt_use_temporal", None))
+    changed |= _set_if_provided(model_cfg, "use_norm", getattr(args, "apt_use_norm", None))
+
+    temporal_block_size = getattr(args, "apt_temporal_block_size", None)
+    if temporal_block_size is not None:
+        model_cfg["temporal_block_size"] = None if int(temporal_block_size) <= 0 else int(temporal_block_size)
+        changed = True
+
+    if update_eval:
+        eval_cfg = cfg.setdefault("eval", {})
+        changed |= _set_if_provided(eval_cfg, "kdt_k", getattr(args, "apt_kdt_k", None))
+        changed |= _set_if_provided(eval_cfg, "default_target_fpr", getattr(args, "apt_target_fpr", None))
+        changed |= _set_if_provided(eval_cfg, "recall_drop_budget", getattr(args, "apt_recall_drop_budget", None))
+        sweep_kdt_k = _parse_csv_ints(getattr(args, "apt_sweep_kdt_k", None))
+        if sweep_kdt_k:
+            eval_cfg["sweep_kdt_k"] = sweep_kdt_k
+            changed = True
+        sweep_target_fpr = _parse_csv_floats(getattr(args, "apt_sweep_target_fpr", None))
+        if sweep_target_fpr:
+            eval_cfg["sweep_target_fpr"] = sweep_target_fpr
+            changed = True
+
+    if changed:
+        save_config(cfg)
+    return cfg
+
+
 def _batch_path(batch_id: int) -> Path:
     return BATCH_ROOT / f"batch_{batch_id}.graphml"
 
@@ -394,14 +464,7 @@ def train_apt2021(device, override_max_epoch: Optional[int] = None):
         if epoch >= warmup_epochs:
             scheduler.step(val_loss)
 
-        print(
-            "[apt2021-train] epoch={:03d} train_loss={:.6f} val_loss={:.6f} lr={:.6e}".format(
-                epoch,
-                train_loss,
-                val_loss,
-                optimizer.param_groups[0]["lr"],
-            )
-        )
+        print("Epoch {} | train_loss: {:.4f} | val_loss: {:.4f}".format(epoch, train_loss, val_loss))
 
         if val_loss < best_val_loss - min_delta:
             best_val_loss = val_loss
@@ -411,7 +474,7 @@ def train_apt2021(device, override_max_epoch: Optional[int] = None):
         else:
             no_improve += 1
             if no_improve >= patience:
-                print(f"[apt2021-train] early stop at epoch {epoch}")
+                print(f"Early stop at epoch {epoch}")
                 break
 
     if best_state is None:
@@ -434,10 +497,7 @@ def train_apt2021(device, override_max_epoch: Optional[int] = None):
         "embedding_dim": int(bank.size(1)),
     }
     save_config(cfg)
-    print(
-        f"[apt2021-train] saved model={MODEL_PATH} bank={BANK_PATH} "
-        f"best_epoch={best_epoch} best_val_loss={best_val_loss:.6f}"
-    )
+    print("Best epoch: {} | best_val_loss: {:.4f}".format(best_epoch, best_val_loss))
 
 
 def evaluate_apt2021(device):
@@ -508,6 +568,12 @@ def evaluate_apt2021(device):
     best_scores = kdt.query(test_emb.numpy(), k=int(best["kdt_k"]))[0].mean(axis=1)
     auc = float(roc_auc_score(labels, best_scores))
     ap = float(average_precision_score(labels, best_scores))
+    y_test = np.asarray(labels, dtype=np.float32)
+    y_pred = (best_scores > float(best["thr"])).astype(np.float32)
+    tp = int(np.sum((y_test == 1.0) & (y_pred == 1.0)))
+    fn = int(np.sum((y_test == 1.0) & (y_pred == 0.0)))
+    tn = int(np.sum((y_test == 0.0) & (y_pred == 0.0)))
+    fp = int(np.sum((y_test == 0.0) & (y_pred == 1.0)))
 
     cfg["eval"]["default_target_fpr"] = float(best["target_fpr"])
     cfg["eval"]["kdt_k"] = int(best["kdt_k"])
@@ -548,9 +614,18 @@ def evaluate_apt2021(device):
     with DEPLOY_PATH.open("w", encoding="utf-8") as f:
         yaml.safe_dump(deploy, f, sort_keys=False, allow_unicode=True)
 
-    print(
-        f"[apt2021-test] kdt_k={best['kdt_k']} target_fpr={best['target_fpr']:.3f} "
-        f"thr={best['thr']:.6f} AUC={auc:.4f} AP={ap:.4f} "
-        f"P={best['P']:.4f} R={best['R']:.4f} F1={best['F1']:.4f}"
-    )
+    print("THRESHOLD_MODE: target_fpr")
+    print("TARGET_FPR: {}".format(float(best["target_fpr"])))
+    print("KNN_K: {}".format(int(best["kdt_k"])))
+    print("AUC: {}".format(auc))
+    print("PR_AUC: {}".format(ap))
+    print("BEST_THRESHOLD: {}".format(float(best["thr"])))
+    print("PRED_POS_RATE: {}".format(float(y_pred.mean())))
+    print("F1: {}".format(float(best["F1"])))
+    print("PRECISION: {}".format(float(best["P"])))
+    print("RECALL: {}".format(float(best["R"])))
+    print("TN: {}".format(tn))
+    print("FN: {}".format(fn))
+    print("TP: {}".format(tp))
+    print("FP: {}".format(fp))
     return auc, 0.0

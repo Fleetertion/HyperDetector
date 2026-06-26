@@ -1,5 +1,6 @@
 import os
 import random
+import glob
 import torch
 import warnings
 import time
@@ -7,7 +8,7 @@ from tqdm import tqdm
 from utils.loaddata import load_batch_level_dataset, load_entity_level_dataset, load_metadata
 from utils.utils import set_random_seed, create_optimizer
 from utils.config import build_args
-from utils.apt2021_pipeline import train_apt2021
+from utils.apt2021_pipeline import apply_apt2021_cli_overrides, train_apt2021
 from torch.utils.data.sampler import SubsetRandomSampler
 from dgl.dataloading import GraphDataLoader
 from model.autoencoder import build_model
@@ -31,6 +32,10 @@ def main(main_args):
         main_args.num_hidden = 32
         default_max_epoch = 10
         main_args.num_layers = 4
+    elif dataset_name == 'clearscope':
+        main_args.num_hidden = 64
+        default_max_epoch = 200
+        main_args.num_layers = 3
     else:
         main_args.num_hidden = 64
         main_args.num_layers = 3
@@ -58,7 +63,9 @@ def main(main_args):
         torch.save(model.state_dict(), "./result/checkpoint-{}.pt".format(dataset_name))
     else:
         if dataset_name == 'apt2021':
-            default_max_epoch = 10
+            if "--max_epoch" not in getattr(main_args, "_provided_flags", set()):
+                main_args.max_epoch = None
+            apply_apt2021_cli_overrides(main_args, update_train=True, update_eval=False)
             train_apt2021(device=device, override_max_epoch=main_args.max_epoch)
             return
         
@@ -94,8 +101,7 @@ def main(main_args):
             epoch_iter.set_description(f"Epoch {epoch} | train_loss: {epoch_loss:.4f}")
         os.makedirs("./result", exist_ok=True)
         torch.save(model.state_dict(), "./result/checkpoint-{}.pt".format(dataset_name))
-        save_dict_path = './result/distance_save_{}.pkl'.format(dataset_name)
-        if os.path.exists(save_dict_path):
+        for save_dict_path in glob.glob('./result/distance_save_{}*.pkl'.format(dataset_name)):
             os.unlink(save_dict_path)
     return
 

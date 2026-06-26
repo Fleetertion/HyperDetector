@@ -6,7 +6,7 @@ from utils.loaddata import load_batch_level_dataset, load_entity_level_dataset, 
 from utils.utils import set_random_seed
 import numpy as np
 from utils.config import build_args
-from utils.apt2021_pipeline import evaluate_apt2021
+from utils.apt2021_pipeline import apply_apt2021_cli_overrides, evaluate_apt2021
 warnings.filterwarnings('ignore')
 
 
@@ -29,6 +29,58 @@ def _infer_num_layers_from_state_dict(state_dict):
     if len(layer_ids) == 0:
         return None
     return max(layer_ids) + 1
+
+
+def _infer_num_hidden_from_state_dict(state_dict):
+    weight = state_dict.get("encoder_to_decoder.weight")
+    if weight is not None and hasattr(weight, "shape") and len(weight.shape) == 2:
+        return int(weight.shape[0])
+    return None
+
+
+def _apply_dataset_model_defaults(main_args, dataset_name):
+    if dataset_name == 'wget':
+        default_hidden = 32
+        default_layers = 4
+    elif dataset_name == 'apt2021':
+        default_hidden = 64
+        default_layers = 2
+    elif dataset_name == 'clearscope':
+        default_hidden = 64
+        default_layers = 3
+        if main_args.entity_knn_k <= 0:
+            main_args.entity_knn_k = 5
+        if main_args.entity_knn_metric is None:
+            main_args.entity_knn_metric = "cosine"
+        if main_args.entity_use_cache is None:
+            main_args.entity_use_cache = True
+        main_args.entity_threshold_mode = main_args.entity_threshold_mode or "legacy"
+    else:
+        default_hidden = 64
+        default_layers = 3
+    if main_args.entity_knn_metric is None:
+        main_args.entity_knn_metric = "euclidean"
+    if main_args.entity_use_cache is None:
+        main_args.entity_use_cache = False
+    main_args.num_hidden = default_hidden if main_args.num_hidden is None else int(main_args.num_hidden)
+    main_args.num_layers = default_layers if main_args.num_layers is None else int(main_args.num_layers)
+
+
+def _align_model_args_to_checkpoint(main_args, state_dict):
+    ckpt_layers = _infer_num_layers_from_state_dict(state_dict)
+    ckpt_hidden = _infer_num_hidden_from_state_dict(state_dict)
+    if ckpt_layers is not None and ckpt_layers != main_args.num_layers:
+        print(
+            f"[eval] checkpoint architecture mismatch detected: "
+            f"num_layers={main_args.num_layers} -> {ckpt_layers}"
+        )
+        main_args.num_layers = ckpt_layers
+    if ckpt_hidden is not None and ckpt_hidden != main_args.num_hidden:
+        print(
+            f"[eval] checkpoint architecture mismatch detected: "
+            f"num_hidden={main_args.num_hidden} -> {ckpt_hidden}"
+        )
+        main_args.num_hidden = ckpt_hidden
 
 
 def _parse_csv_int_list(value):
@@ -66,12 +118,7 @@ def main(main_args):
     device = torch.device(device)
     dataset_name = main_args.dataset.lower()
     main_args.dataset = dataset_name
-    if dataset_name in ['wget']:
-        main_args.num_hidden = 32
-        main_args.num_layers = 4
-    else:
-        main_args.num_hidden = 64
-        main_args.num_layers = 3
+    _apply_dataset_model_defaults(main_args, dataset_name)
     set_random_seed(0)
 
     if dataset_name == 'wget':
@@ -87,13 +134,7 @@ def main(main_args):
         checkpoint_path = "./result/checkpoint-{}.pt".format(dataset_name)
         state_dict = torch.load(checkpoint_path, map_location=device)
         state_dict = _normalize_state_dict_keys(state_dict)
-        ckpt_layers = _infer_num_layers_from_state_dict(state_dict)
-        if ckpt_layers is not None and ckpt_layers != main_args.num_layers:
-            print(
-                f"[eval] checkpoint architecture mismatch detected: "
-                f"num_layers={main_args.num_layers} -> {ckpt_layers}"
-            )
-            main_args.num_layers = ckpt_layers
+        _align_model_args_to_checkpoint(main_args, state_dict)
         model = build_model(main_args)
         model.load_state_dict(state_dict)
         model = model.to(device)
@@ -104,6 +145,7 @@ def main(main_args):
         )
     else:
         if dataset_name == 'apt2021':
+            apply_apt2021_cli_overrides(main_args, update_train=False, update_eval=True)
             test_auc, test_std = evaluate_apt2021(device=device)
             print(f"#Test_AUC: {test_auc:.4f}±{test_std:.4f}")
             return
@@ -113,8 +155,12 @@ def main(main_args):
         metadata = load_metadata(dataset_name)
         main_args.n_dim = metadata['node_feature_dim']
         main_args.e_dim = metadata['edge_feature_dim']
+        checkpoint_path = "./result/checkpoint-{}.pt".format(dataset_name)
+        state_dict = torch.load(checkpoint_path, map_location=device)
+        state_dict = _normalize_state_dict_keys(state_dict)
+        _align_model_args_to_checkpoint(main_args, state_dict)
         model = build_model(main_args)
-        model.load_state_dict(torch.load("./result/checkpoint-{}.pt".format(dataset_name), map_location=device))
+        model.load_state_dict(state_dict)
         model = model.to(device)
         model.eval()
         malicious_field = metadata.get('malicious', [])
@@ -175,6 +221,29 @@ def main(main_args):
                 result_x_test = x_test
                 result_y_test = y_test
             del x_test, y_test
+            auxiliary_score = None
+            if dataset_name == 'cadets' and main_args.cadets_exec_context:
+                from utils.cadets_context import load_or_build_cadets_exec_context_score
+
+                auxiliary_full, auxiliary_details = load_or_build_cadets_exec_context_score(n)
+                if auxiliary_full is None:
+                    print("[eval-cadets-context] disabled: {}".format(auxiliary_details.get("reason")))
+                else:
+                    if exclude_train_nodes_from_test:
+                        auxiliary_score = auxiliary_full[test_idx]
+                    else:
+                        auxiliary_score = auxiliary_full
+                    print(
+                        "[eval-cadets-context] cache_hit={} train_execs={} unseen_execs={} "
+                        "mapped_nodes={} active_eval_nodes={} top_unseen={}".format(
+                            auxiliary_details.get("cache_hit"),
+                            auxiliary_details.get("train_exec_count"),
+                            auxiliary_details.get("unseen_exec_count"),
+                            auxiliary_details.get("mapped_node_count"),
+                            int(np.sum(auxiliary_score > 0)),
+                            auxiliary_details.get("top_unseen_execs"),
+                        )
+                    )
             print(
                 f"[eval-knn] x_train={x_train.shape} x_test={result_x_test.shape} "
                 f"y_test={result_y_test.shape}"
@@ -189,7 +258,10 @@ def main(main_args):
                     n_neighbors=eval_k, metric=eval_metric,
                     threshold_mode=main_args.entity_threshold_mode,
                     target_recall=main_args.entity_target_recall,
-                    use_cache=False
+                    use_cache=main_args.entity_use_cache,
+                    auxiliary_score=auxiliary_score,
+                    auxiliary_weight=main_args.cadets_exec_context_weight,
+                    auxiliary_name="cadets_unseen_exec" if auxiliary_score is not None else None
                 )
             else:
                 if len(search_k) == 0:
@@ -210,7 +282,10 @@ def main(main_args):
                             n_neighbors=k, metric=metric,
                             threshold_mode=main_args.entity_threshold_mode,
                             target_recall=main_args.entity_target_recall,
-                            use_cache=False
+                            use_cache=main_args.entity_use_cache,
+                            auxiliary_score=auxiliary_score,
+                            auxiliary_weight=main_args.cadets_exec_context_weight,
+                            auxiliary_name="cadets_unseen_exec" if auxiliary_score is not None else None
                         )
                         if metrics is None:
                             continue
