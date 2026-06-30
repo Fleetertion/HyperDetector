@@ -43,7 +43,7 @@ def _apply_dataset_model_defaults(main_args, dataset_name):
         default_hidden = 32
         default_layers = 4
     elif dataset_name == 'apt2021':
-        default_hidden = 64
+        default_hidden = 32
         default_layers = 2
     elif dataset_name == 'clearscope':
         default_hidden = 64
